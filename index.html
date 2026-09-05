@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Regola di sicurezza per consentire l'embed su Notion -->
+  <meta http-equiv="Content-Security-Policy" content="frame-ancestors 'self' https://*.notion.so https://*.notion.site;">
+  <title>Corona d'Alloro 3D</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+    }
+    #tooltip {
+      position: absolute;
+      display: none;
+      padding: 8px 12px;
+      background: rgba(15, 23, 42, 0.85);
+      color: #ffffff;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      pointer-events: none;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      z-index: 10;
+      white-space: nowrap;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+<div id="tooltip"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+// --- CONFIGURAZIONE NOTION ---
+const TOTAL_EXAMS = 108;
+const WORKER_URL = "https://corona-alloro.adele-patta.workers.dev/";
+
+let examData = new Array(TOTAL_EXAMS).fill(null).map((_, i) => ({
+  name: `Esame ${i + 1}`,
+  status: 'not started',
+  period: ''
+}));
+
+// --- IMPOSTAZIONE SCENA THREE.JS ---
+const container = document.getElementById('canvas-container');
+const tooltip = document.getElementById('tooltip');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0, 11);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0; 
+container.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.maxDistance = 20;
+controls.minDistance = 5;
+
+// --- ILLUMINAZIONE ---
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+scene.add(ambientLight);
+
+const mainLight = new THREE.DirectionalLight(0xfff5ea, 2.0);
+mainLight.position.set(5, 8, 5);
+mainLight.castShadow = true;
+scene.add(mainLight);
+
+const rimLight = new THREE.DirectionalLight(0xffffff, 0.4);
+rimLight.position.set(-5, -2, -5);
+scene.add(rimLight);
+
+const fillLight = new THREE.PointLight(0xffffff, 1.0, 10);
+fillLight.position.set(0, 0, 3);
+scene.add(fillLight);
+
+// --- TEXTURE PROCEDURALE NASTRO ---
+function createFabricTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 128, 128);
+  
+  ctx.fillStyle = '#999999';
+  for (let i = 0; i < 128; i += 2) {
+    ctx.fillRect(i, 0, 1, 128);
+    ctx.fillRect(0, i, 128, 1);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(8, 8);
+  return texture;
+}
+const fabricBumpMap = createFabricTexture();
+
+// --- COLORI E MATERIALI ---
+const COLOR_WHITE = new THREE.Color(0xe2e8f0);       // Non iniziato
+const COLOR_LIGHT_GREEN = new THREE.Color(0xa3e635); // In corso
+const COLOR_FULL_GREEN = new THREE.Color(0x15803d);  // Completato
+
+const COLOR_INACTIVE_RIBBON = new THREE.Color(0xc4cbd4);
+const COLOR_ACTIVE_RIBBON = new THREE.Color(0x990000);
+
+const COLOR_INACTIVE_BERRY = new THREE.Color(0xd0d7de);
+const COLOR_ACTIVE_BERRY = new THREE.Color(0xcc0000);
+
+const leafMaterial = new THREE.MeshStandardMaterial({
+  roughness: 0.35,
+  metalness: 0.05,
+  side: THREE.DoubleSide
+});
+
+leafMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime = { value: 0 };
+  leafMaterial.userData.shader = shader;
+  shader.vertexShader = `
+    uniform float uTime;
+    ${shader.vertexShader}
+  `.replace(
+    `#include <begin_vertex>`,
+    `
+    #include <begin_vertex>
+    float wind = sin(uTime * 2.2 + position.y * 3.0 + transformed.x * 4.0) * 0.025 * (position.y);
+    transformed.z += wind;
+    transformed.x += wind * 0.4;
+    `
+  );
+};
+
+const ribbonMaterial = new THREE.MeshStandardMaterial({
+  color: COLOR_INACTIVE_RIBBON,
+  roughness: 0.65,
+  metalness: 0.05,
+  bumpMap: fabricBumpMap,
+  bumpScale: 0.005,
+  side: THREE.DoubleSide
+});
+
+const berryMaterial = new THREE.MeshStandardMaterial({
+  color: COLOR_INACTIVE_BERRY,
+  roughness: 0.15,
+  metalness: 0.2
+});
+
+// --- GEOMETRIA FOGLIA ---
+function createLeafGeometry() {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.bezierCurveTo(0.15, 0.2, 0.25, 0.6, 0.2, 1.0);
+  shape.bezierCurveTo(0.15, 1.3, 0.05, 1.5, 0, 1.7);
+  shape.bezierCurveTo(-0.05, 1.5, -0.15, 1.3, -0.2, 1.0);
+  shape.bezierCurveTo(-0.25, 0.6, -0.15, 0.2, 0, 0);
+
+  const geometry = new THREE.ShapeGeometry(shape, 12);
+  const pos = geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    const x = pos.getX(i);
+    pos.setZ(i, -Math.sin(y * Math.PI / 1.7) * 0.08 + (1 - Math.abs(x)) * 0.03);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// --- GRUPPO PRINCIPALE ---
+const crownGroup = new THREE.Group();
+scene.add(crownGroup);
+
+// --- CURVA DELLA CORONA ---
+const R = 3.2;
+const curvePoints = [];
+const startAngle = -Math.PI * 0.42;
+const endAngle = Math.PI * 1.42;
+
+for (let i = 0; i <= 100; i++) {
+  const theta = startAngle + (i / 100) * (endAngle - startAngle);
+  const x = R * Math.cos(theta);
+  const y = R * Math.sin(theta) * 0.9;
+  const z = Math.sin(theta * 2) * 0.1;
+  curvePoints.push(new THREE.Vector3(x, y, z));
+}
+const curve = new THREE.CatmullRomCurve3(curvePoints);
+
+// Ramo
+const stemGeo = new THREE.TubeGeometry(curve, 100, 0.04, 8, false);
+const stemMat = new THREE.MeshStandardMaterial({ color: 0x2b180a, roughness: 0.8 });
+const stemMesh = new THREE.Mesh(stemGeo, stemMat);
+crownGroup.add(stemMesh);
+
+// --- MAPPATURA SEQUENZIALE ED ISTANZIAMENTO FOGLIE ---
+const leafGeo = createLeafGeometry();
+const totalLeafCount = 420;
+const leafMesh = new THREE.InstancedMesh(leafGeo, leafMaterial, totalLeafCount);
+leafMesh.castShadow = true;
+leafMesh.receiveShadow = true;
+
+const dummy = new THREE.Object3D();
+const leafGroupMapping = new Array(totalLeafCount);
+let instanceIdx = 0;
+const totalSteps = 150;
+
+for (let i = 0; i < totalSteps; i++) {
+  const t = i / totalSteps;
+  const point = curve.getPoint(t);
+  const tangent = curve.getTangent(t);
+  const leavesAtNode = 2 + Math.floor(Math.random() * 2);
+  
+  const groupIndex = Math.min(Math.floor(t * TOTAL_EXAMS), TOTAL_EXAMS - 1);
+
+  for (let l = 0; l < leavesAtNode; l++) {
+    if (instanceIdx >= totalLeafCount) break;
+
+    dummy.position.copy(point);
+    const offsetAngle = (l / leavesAtNode) * Math.PI * 2 + (Math.random() * 0.4);
+    const radiusOffset = 0.08 + Math.random() * 0.06;
+
+    dummy.position.x += Math.cos(offsetAngle) * radiusOffset;
+    dummy.position.y += Math.sin(offsetAngle) * radiusOffset;
+    dummy.position.z += (Math.random() - 0.5) * 0.12;
+
+    dummy.lookAt(point.clone().add(tangent));
+    dummy.rotateX(Math.PI / 2 + (Math.random() - 0.5) * 0.6);
+    dummy.rotateY((Math.random() - 0.5) * 0.8);
+    dummy.rotateZ((l % 2 === 0 ? 1 : -1) * (0.4 + Math.random() * 0.5));
+
+    const scale = 0.65 + Math.random() * 0.45;
+    dummy.scale.set(scale, scale, scale);
+
+    dummy.updateMatrix();
+    leafMesh.setMatrixAt(instanceIdx, dummy.matrix);
+    leafMesh.setColorAt(instanceIdx, COLOR_WHITE);
+
+    leafGroupMapping[instanceIdx] = groupIndex;
+    instanceIdx++;
+  }
+}
+leafMesh.instanceMatrix.needsUpdate = true;
+leafMesh.instanceColor.needsUpdate = true;
+crownGroup.add(leafMesh);
+
+// --- BACCHE ---
+const berryGeo = new THREE.SphereGeometry(0.08, 12, 12);
+const berryGroup = new THREE.Group();
+
+for (let i = 0; i < totalSteps; i += 4) {
+  if (Math.random() > 0.35) {
+    const t = i / totalSteps;
+    const point = curve.getPoint(t);
+    const normal = new THREE.Vector3().crossVectors(curve.getTangent(t), new THREE.Vector3(0, 0, 1)).normalize();
+    const clusterCenter = point.clone().add(normal.multiplyScalar(0.25 + Math.random() * 0.15));
+    const berriesInCluster = 3 + Math.floor(Math.random() * 4);
+
+    for (let b = 0; b < berriesInCluster; b++) {
+      const berry = new THREE.Mesh(berryGeo, berryMaterial);
+      berry.castShadow = true;
+      berry.position.copy(clusterCenter).add(new THREE.Vector3(
+        (Math.random() - 0.5) * 0.12,
+        (Math.random() - 0.5) * 0.12,
+        (Math.random() - 0.5) * 0.12
+      ));
+      const bScale = 0.8 + Math.random() * 0.5;
+      berry.scale.set(bScale, bScale, bScale);
+      berryGroup.add(berry);
+    }
+  }
+}
+crownGroup.add(berryGroup);
+
+// --- FIOCCO TRIDIMENSIONALE MORBIDO ---
+function create3DFabricBow() {
+  const bowGroup = new THREE.Group();
+  const bowPos = curve.getPoint(0).add(curve.getPoint(1)).multiplyScalar(0.5);
+  bowPos.y -= 0.20;
+
+  const knotGeo = new THREE.CylinderGeometry(0.20, 0.16, 0.38, 20);
+  knotGeo.rotateZ(Math.PI / 2);
+  knotGeo.scale(1, 0.75, 0.85);
+  const knot = new THREE.Mesh(knotGeo, ribbonMaterial);
+  knot.castShadow = true;
+  bowGroup.add(knot);
+
+  function createVolumetricLoop(isLeft) {
+    const side = isLeft ? -1 : 1;
+    const loopCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(side * 0.5, 0.28, 0.25),
+      new THREE.Vector3(side * 1.35, 0.18, 0.1),
+      new THREE.Vector3(side * 1.45, -0.15, -0.1),
+      new THREE.Vector3(side * 0.65, -0.28, -0.15),
+      new THREE.Vector3(0, -0.05, 0)
+    ], true);
+
+    const tubeGeo = new THREE.TubeGeometry(loopCurve, 40, 0.28, 16, true);
+    const pos = tubeGeo.attributes.position;
+
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i);
+      let y = pos.getY(i);
+      let z = pos.getZ(i);
+      y *= 0.55; 
+      const distFromCenter = Math.sqrt(x * x + y * y + z * z);
+      const factor = Math.min(distFromCenter / 1.2, 1.0);
+      y *= (0.3 + 0.7 * factor);
+      z *= (0.35 + 0.65 * factor);
+      pos.setXYZ(i, x, y, z);
+    }
+    tubeGeo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(tubeGeo, ribbonMaterial);
+    mesh.castShadow = true;
+    return mesh;
+  }
+
+  const leftLoop = createVolumetricLoop(true);
+  leftLoop.rotation.set(0.12, 0.2, 0.08);
+  bowGroup.add(leftLoop);
+
+  const rightLoop = createVolumetricLoop(false);
+  rightLoop.rotation.set(-0.12, -0.2, -0.08);
+  bowGroup.add(rightLoop);
+
+  function createTailMesh(isLeft) {
+    const width = 0.32;
+    const length = 2.4;
+    const geo = new THREE.PlaneGeometry(width, length, 12, 24);
+    const pos = geo.attributes.position;
+    const side = isLeft ? -1 : 1;
+
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i);
+      const progress = (1 - (y + length / 2) / length);
+      const waveX = Math.sin(progress * Math.PI * 1.5) * 0.28 * side;
+      const waveZ = Math.cos(progress * Math.PI * 2) * 0.15;
+
+      pos.setX(i, pos.getX(i) + waveX + progress * 0.4 * side);
+      pos.setZ(i, pos.getZ(i) + waveZ);
+    }
+    geo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(geo, ribbonMaterial);
+    mesh.position.set(side * 0.1, -length / 2 - 0.08, 0);
+    mesh.rotation.z = side * -0.12;
+    mesh.castShadow = true;
+    return mesh;
+  }
+
+  bowGroup.add(createTailMesh(true));
+  bowGroup.add(createTailMesh(false));
+
+  bowGroup.scale.set(1.1, 1.1, 1.1);
+  bowGroup.position.copy(bowPos);
+  return bowGroup;
+}
+
+crownGroup.add(create3DFabricBow());
+
+// --- AGGIORNAMENTO GRAFICA ---
+function updateCoronaState() {
+  if (!leafMesh) return;
+  let doneCount = 0;
+
+  for (let i = 0; i < totalLeafCount; i++) {
+    const examIdx = leafGroupMapping[i];
+    const item = examData[examIdx] || { status: 'not started' };
+
+    if (item.status === 'done') {
+      leafMesh.setColorAt(i, COLOR_FULL_GREEN);
+    } else if (item.status === 'in progress') {
+      leafMesh.setColorAt(i, COLOR_LIGHT_GREEN);
+    } else {
+      leafMesh.setColorAt(i, COLOR_WHITE);
+    }
+  }
+  
+  if (leafMesh.instanceColor) {
+    leafMesh.instanceColor.needsUpdate = true;
+  }
+
+  for (let item of examData) {
+    if (item.status === 'done') doneCount++;
+  }
+
+  if (doneCount >= TOTAL_EXAMS && TOTAL_EXAMS > 0) {
+    ribbonMaterial.color.copy(COLOR_ACTIVE_RIBBON);
+    berryMaterial.color.copy(COLOR_ACTIVE_BERRY);
+  } else {
+    ribbonMaterial.color.copy(COLOR_INACTIVE_RIBBON);
+    berryMaterial.color.copy(COLOR_INACTIVE_BERRY);
+  }
+}
+
+updateCoronaState();
+
+// --- RAYCASTING PER HOVER/TOOLTIP ---
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+window.addEventListener('mousemove', (event) => {
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObject(leafMesh);
+
+  if (intersects.length > 0) {
+    const instanceId = intersects[0].instanceId;
+    const examIdx = leafGroupMapping[instanceId];
+    const exam = examData[examIdx];
+
+    if (exam && exam.name) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = event.clientX + 12 + 'px';
+      tooltip.style.top = event.clientY + 12 + 'px';
+      
+      let statusText = "Non iniziato";
+      if (exam.status === 'done') statusText = "Completato";
+      if (exam.status === 'in progress') statusText = "In corso";
+
+      let periodLabel = exam.period ? `<br><span style="font-size: 11px; color: #cbd5e1;">${exam.period}</span>` : '';
+
+      tooltip.innerHTML = `<strong>${exam.name}</strong>${periodLabel}<br><span style="font-size: 11px; opacity: 0.8;">${statusText}</span>`;
+    }
+  } else {
+    tooltip.style.display = 'none';
+  }
+});
+
+// --- SINCRONIZZAZIONE CON NOTION ---
+async function syncWithNotion() {
+  try {
+    const res = await fetch(WORKER_URL);
+    const data = await res.json();
+
+    if (data.results && Array.isArray(data.results)) {
+      const parsedData = data.results.map((page, index) => {
+        let name = `Esame ${index + 1}`;
+        const nameProp = page.properties['Esame/modulo'] || page.properties['esame/modulo'];
+        if (nameProp && nameProp.title && nameProp.title.length > 0) {
+          name = nameProp.title[0].plain_text;
+        }
+
+        let period = '';
+        const periodProp = page.properties['Anno/semestre'] || page.properties['anno/semestre'];
+        if (periodProp) {
+          if (periodProp.select) period = periodProp.select.name;
+          else if (periodProp.status) period = periodProp.status.name;
+          else if (periodProp.rich_text && periodProp.rich_text.length > 0) period = periodProp.rich_text[0].plain_text;
+        }
+
+        const statusProp = page.properties['Stato'];
+        let val = '';
+        if (statusProp && statusProp.status) val = statusProp.status.name;
+        else if (statusProp && statusProp.select) val = statusProp.select.name;
+
+        const str = String(val).toLowerCase().trim();
+        let status = 'not started';
+        if (['fatto', 'completato', 'superato', 'done', 'passato'].includes(str)) status = 'done';
+        else if (['in corso', 'in preparazione', 'in progress'].includes(str)) status = 'in progress';
+
+        return { name, status, period };
+      });
+
+      parsedData.sort((a, b) => {
+        if (!a.period) return 1;
+        if (!b.period) return -1;
+        return a.period.localeCompare(b.period, undefined, { numeric: true, sensitivity: 'base' });
+      });
+
+      examData = parsedData;
+      updateCoronaState();
+    }
+  } catch (err) {
+    console.warn("Errore durante la sincronizzazione:", err);
+  }
+}
+
+syncWithNotion();
+setInterval(syncWithNotion, 30000);
+
+// --- ANIMAZIONE E RENDERING ---
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const elapsedTime = clock.getElapsedTime();
+
+  if (leafMaterial.userData.shader) {
+    leafMaterial.userData.shader.uniforms.uTime.value = elapsedTime;
+  }
+
+  if (controls.state === -1) {
+    crownGroup.rotation.y = Math.sin(elapsedTime * 0.3) * 0.12;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+
+// --- ADATTAMENTO FINESTRA ---
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
