@@ -1,0 +1,33 @@
+name: Sincronizza Esami da Notion
+
+on:
+  schedule:
+    # Esegue l'aggiornamento ogni 15 minuti (orario UTC)
+    - cron: '*/15 * * * *'
+  # Permette di avviarlo manualmente con un clic
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica codice repository
+        uses: actions/checkout@v4
+
+      - name: Configura Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Scarica dati da Notion
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DATABASE_ID: ${{ secrets.DATABASE_ID }}
+        run: node fetch-notion.js
+
+      - name: Salva dati.json su GitHub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dati.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Aggiornamento dati Notion" && git push)
