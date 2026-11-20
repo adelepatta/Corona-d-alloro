@@ -46,7 +46,7 @@
 <script>
 // --- CONFIGURAZIONE NOTION ---
 const TOTAL_EXAMS = 108;
-const WORKER_URL = "https://corona-alloro.adele-patta.workers.dev/";
+const WORKER_URL = "./dati.json";
 
 let examData = new Array(TOTAL_EXAMS).fill(null).map((_, i) => ({
   name: `Esame ${i + 1}`,
@@ -451,7 +451,7 @@ window.addEventListener('mousemove', (event) => {
 // --- SINCRONIZZAZIONE CON NOTION ---
 async function syncWithNotion() {
   try {
-    const res = await fetch(WORKER_URL);
+    const res = await fetch(`${WORKER_URL}?t=${Date.now()}`);
     const data = await res.json();
 
     if (data.results && Array.isArray(data.results)) {
